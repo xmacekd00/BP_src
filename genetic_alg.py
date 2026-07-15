@@ -1,0 +1,544 @@
+from data_structures import ProtChain
+from data_structures import PdbProtChain
+from pathlib import Path
+from schema import get_split_indices
+from pdb_structure_parser import parse_pdb_file
+from evcouplings.couplings import CouplingsModel
+import sys
+import random
+import subprocess
+import shutil
+import tempfile
+import os
+import csv
+
+population_size = 0
+sequences_to_next_generation_count = 0
+AGGREPROT_BIN = "/home/david-macek/Documents/VUT_FIT/BP/solution/.venv-aggreprot/bin/aggreprot-predictor"
+AMINO_ACID_ORDER = "ARNDCQEGHILKMFPSTWYV"
+
+# function returns list of protein chains parsed out of .dat files
+def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]:
+
+    folder_path = asr_folder_base_path + "asr/lazarus_tree_nodes/tree1"
+    #get all item from given directory
+    folder_content = list(Path(folder_path).iterdir())
+
+    node_files = []
+    index= 0
+
+    #append to node_files all files starting with "node"
+    for item in folder_content:
+        if(not item.is_file()): continue
+
+        if(not item.name.startswith("node")): continue
+
+        node_files.append(item)
+
+    chains = []
+
+    #extract from all .dat files protein sequences and append them to list
+    for file in node_files:
+        aligned_sequence = extract_sequence_from_dat_file(file)
+        sequence = aligned_sequence.replace("-","")
+
+        chain = ProtChain(
+            id="node"+str(index),
+            sequence=sequence,
+            residues=list(sequence),
+            aligned_sequence=aligned_sequence)
+        index+=1
+
+        chains.append(chain)
+        
+    return chains
+
+#function returns a protein sequence consisted of most probable residue on every position
+def extract_sequence_from_dat_file(path: Path) -> str:
+    with open(path, "r") as f:
+        lines = f.readlines()
+
+    sequence = ""
+    
+    for line in lines:
+        parts = line.split()
+        #invalid row
+        if not parts or len(parts)<2: continue
+        #most probable residue
+        residue = parts[1]
+
+        sequence += residue
+        
+    return sequence
+    
+#function computes fitness score of each individual in population and sets its .score
+def eval_population(population: list[ProtChain])-> int | None:
+    
+    model = CouplingsModel("model.params")
+    unscored_indices = [
+        i
+        for i in range(len(population))
+        if  population[i].score == 0.0
+    ]
+    unscored_seqs = []
+
+    for index in unscored_indices:
+        seq = population[index].aligned_sequence
+        
+        if(len(seq) != model.L):
+            print("Error: protein sequence has unsupported length\n")
+            return None
+        
+        unscored_seqs.append(seq)
+
+    #no new sequences in population
+    if not unscored_seqs: return 0
+
+
+    scores = model.hamiltonians(unscored_seqs)
+
+    for index, score in zip(unscored_indices,scores):
+        population[index].score = float(score[0])
+
+    return 0
+        
+#TODO
+#random generator
+def get_score(chain: ProtChain) -> float:
+    return random.randint(0,1)/100
+
+#function returns all pairs for crossover
+#random weighted choice based on a score
+def get_crossover_pairs(population: list[ProtChain])-> list[list[ProtChain]]:
+    
+    chains = []
+    weights = []
+    #put weigths and sequences into separate lists
+    for i in range(len(population)):
+        weights.append(population[i].score)
+        chains.append(population[i])
+
+    pairs = []
+    #generate pairs
+    for i in range(population_size-sequences_to_next_generation_count):
+        parent1 = random.choices(chains, weights=weights, k=1)[0]
+
+        parent2 = random.choices(chains, weights=weights, k=1)[0]
+        #prevent choice of two same sequences
+        while parent2 == parent1:
+            parent2 = random.choices(chains, weights=weights, k=1)[0]
+
+        pairs.append([parent1, parent2])
+
+
+    return pairs
+
+#function makes a new population for the next iteration of genetic algorithm
+def do_crossover(
+        pdb_chain: PdbProtChain,
+        population: list[ProtChain],
+        generation_number: int
+        )->list[ProtChain]:
+    
+    crossover_pairs = get_crossover_pairs(population)
+    children_index=0
+
+    split_indices = []
+    for pair in crossover_pairs:
+        #??same PDB file for all crossovers??
+        split_indices.append(get_split_indices(pdb_chain,pair))
+    
+    new_generation = []
+
+    for i in range(len(crossover_pairs)):
+        parent1 = crossover_pairs[i][0]
+        parent2 = crossover_pairs[i][1]
+        
+        #split sequences
+        par1_splitted = get_splitted_sequences(parent1,split_indices[i])
+        par2_splitted = get_splitted_sequences(parent2,split_indices[i])
+        
+        #calculate which parts are gonna be used from par1 and which from par2
+        new_aligned_seq=""
+        #iterate through parts and build the sequence of par1 and par2
+        for j in range(len(par1_splitted)):
+            par1_score = sum(par1_splitted[j].aggreprot_scores)
+            par2_score = sum(par2_splitted[j].aggreprot_scores)
+            #score transformed to range <0,1>
+            weight1 = 1 / (par1_score + 1e-6)
+            weight2 = 1 / (par2_score + 1e-6)
+            #random weighted choice of part from par1 or par2
+            choice = random.choices(
+                [par1_splitted[j],par2_splitted[j]],
+                weights=[weight1,weight2],
+                k=1)[0]
+            
+            new_aligned_seq+=choice.aligned_sequence
+
+        new_seq = new_aligned_seq.replace("-","")
+
+        new_chain = ProtChain(
+            id=f"gen{generation_number}_child{children_index}",
+            sequence=new_seq,
+            residues=list(new_seq),
+            aligned_sequence=new_aligned_seq
+            )
+        new_generation.append(new_chain)
+        children_index +=1
+    return new_generation
+
+
+#function splits sequence by given indices and returns list of ProtChain structures
+#One ProtChain strcture is one part of parent sequence
+def get_splitted_sequences(chain: ProtChain, split_indices: list[int])-> list[ProtChain]:
+    parts: list[ProtChain] = []
+    indices = [0] + split_indices + [len(chain.aligned_sequence)]
+
+
+    for i in range(len(indices)-1):
+        #start and end index of current part in aligned indexing
+        start = indices[i]
+        end = indices[i+1]
+        
+        #get aligned and raw part
+        aligned_part_sequence = chain.aligned_sequence[start:end]
+        part_sequence = aligned_part_sequence.replace("-","")
+
+        #transform aligned sequence start index to raw sequence start index
+        raw_start = sum(
+            residue != "-"
+            for residue in chain.aligned_sequence[:start])
+        
+        raw_end = sum(
+            residue != "-"
+            for residue in chain.aligned_sequence[:end]
+        )
+
+        part_score = chain.aggreprot_scores[raw_start:raw_end]
+
+        part = ProtChain(
+            id=f"{chain.id}_part{i}",
+            sequence=part_sequence,
+            residues=list(part_sequence),
+            aggreprot_scores=part_score,
+            aligned_sequence=aligned_part_sequence)
+        parts.append(part)
+
+    return parts
+
+#function appends 10 best proteins to new population based on their score
+def add_best_performers_to_new_generation(population: list[ProtChain], new_population: list[ProtChain]):
+    chains = []
+    scores = []
+    #put scores and sequences into separate lists
+    for i in range(len(population)):
+        scores.append(population[i].score)
+        chains.append(population[i])
+
+
+    for i in range(sequences_to_next_generation_count):
+        #find index of protein with best score
+        best_performer_index = scores.index(max(scores))
+        new_population.append(chains[best_performer_index])
+        #remove already appended best protein 
+        scores.pop(best_performer_index)
+        chains.pop(best_performer_index)
+
+#function runs aggreprot tool on each chain and assigns result values to each chain.aggreprot_score
+def load_aggreprot_scores(population: list[ProtChain]):
+    tmp_dir = tempfile.mkdtemp(dir=".")
+
+    try:
+        #create required temporary files and folders
+        tmp_path = Path(tmp_dir)
+        fasta_path = tmp_path / "population.fasta"
+        aggreprot_out_dir = tmp_path / "aggreprot_out"
+
+        #write all sequences to fasta file
+        with open(fasta_path,"w") as f:
+            for i in range(len(population)):
+                f.write(f">{population[i].id}\n")
+                f.write(f"{population[i].sequence}\n")
+
+        run_aggreprot(aggreprot_out_dir,fasta_path)
+
+        aggreprot_result_path = aggreprot_out_dir / "batch-profile-final-mean.txt"
+
+        with open(aggreprot_result_path,"r") as f:
+            lines = f.readlines()
+
+        process_aggreprot_output(lines, population)
+
+    finally:
+        #remove the temporary folder with all content
+        if(os.path.exists(tmp_dir)):
+            shutil.rmtree(tmp_dir)
+    
+    
+#function runs aggreprot tool with given arguments 
+def run_aggreprot(out_dir:Path, fasta_path: Path):
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = "-1"
+    env["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+    cmd = [
+        AGGREPROT_BIN,
+        "predict-sequential-batch",
+        "--out-dir",
+        str(out_dir),
+        str(fasta_path)
+    ]
+
+    subprocess.run(cmd, check=True, env=env)
+
+#function parses output of aggreprot tool and assigns results to chains
+def process_aggreprot_output(lines: list[str],population: list[ProtChain]):
+    chain_id_map = {}
+    for chain in population:
+        chain_id_map[chain.id]=chain
+
+    for i in range(len(lines)):
+        parts = lines[i].split()
+
+        if(len(parts)<3): continue
+
+        line_id = parts[0]
+        scores = [float(x) for x in parts[2:]]
+
+        if(line_id in chain_id_map):
+            chain_id_map[line_id].aggreprot_scores = scores
+
+#function computes conservation rate of each column from full_msa
+def compute_column_conservation(folder_base_path: str)-> list[float] | None:
+    path = folder_base_path + "asr/full_msa.fasta"
+    
+    #read full_msa.fasta
+    with open(path,"r") as f:
+        lines  = f.readlines()
+
+    #remove sequence id lines and blank lines
+    sequences = []
+    current_seq = ""
+
+    for i in range(1,len(lines)):
+        #new sequence begins, so append the previous one
+        if(lines[i].startswith(">")):
+            sequences.append(current_seq.strip())
+            current_seq = ""
+        else:
+            current_seq += lines[i].strip()
+    #append last sequnce
+    sequences.append(current_seq)
+
+    if(len(sequences)==0):
+        print("Error: full_msa.fasta is empty or bug in compute_column_conservation\n")
+        return None
+    
+    col_conservation_score = []
+
+    for i in range(len(sequences[0])):
+        residue_count_dict = {}
+
+        for j in range(len(sequences)):
+            residue = sequences[j][i]
+            
+            #skip gaps
+            if(residue=="-"):continue
+
+            if(residue not in residue_count_dict):
+                residue_count_dict[residue] = 1
+            else:
+                residue_count_dict[residue] += 1
+
+        #all items in this column are gaps
+        if(not residue_count_dict):
+            col_conservation_score.append(0.0)
+            continue
+        
+        #compute which residues appears the most
+        max_residue = max(residue_count_dict,key=residue_count_dict.get)
+        max_res_count = residue_count_dict[max_residue]
+
+        total_res_count = sum(residue_count_dict.values())
+
+        col_conservation_score.append(max_res_count/total_res_count)
+
+    return col_conservation_score
+
+#function applies mutation on each individual of a population
+def do_mutation(
+        population: list[ProtChain],
+        conservation_scores: list[float],
+        posterior_prob: list[list[float]],
+        gap_prob: list[float]):
+    
+    #square the value to lower the probability of stable residues and to rise the probability of unstable residues
+    mutation_weights = [(1.0 - score) ** 2 for score in conservation_scores]
+
+
+    for chain in population:
+        #get list of indices, where could be mutation applied
+        possible_mutation_indices = [
+            i
+            for i, residue in enumerate(chain.aligned_sequence)
+            if residue != "-"
+            and gap_prob[i] < 0.5
+            and mutation_weights[i] > 0
+        ]
+
+        #no residue can not be mutated
+        if(not possible_mutation_indices): continue
+        
+        #choose only those weights that are 
+        possible_mut_weights = [mutation_weights[i] for i in possible_mutation_indices]
+
+        mutation_index = random.choices(
+            possible_mutation_indices,
+            weights=possible_mut_weights,
+            k=1
+            )[0]
+        
+        old_residue = chain.aligned_sequence[mutation_index]
+
+        possible_aa = []
+        aa_weights = []
+
+        for index, residue in enumerate(AMINO_ACID_ORDER):
+            #t choosing the same residue to increase the diversity of population
+            if(residue == old_residue): continue
+
+            possible_aa.append(residue)
+            aa_weights.append(posterior_prob[mutation_index][index])
+
+        #no mutation
+        if (sum(aa_weights) == 0): continue
+
+        new_residue =  random.choices(
+            possible_aa,
+            weights=aa_weights,
+            k=1
+        )[0]
+        
+        #change old residue to new one
+        aligned_list = list(chain.aligned_sequence)
+        aligned_list[mutation_index] = new_residue
+
+        chain.aligned_sequence = "".join(aligned_list)
+        chain.sequence = chain.aligned_sequence.replace("-","")
+        chain.residues = list(chain.sequence)
+        chain.score = 0.0
+        chain.aggreprot_scores = []
+
+#function makes from csv file posterior and gap probabilities lists
+def load_posterior_probabilities(folder_base_path: str
+                                 ) -> tuple[list[list[float]],list[float]]:
+    csv_path = folder_base_path + "asr/ancestral_profile.csv"
+    rows = []
+
+    with open(csv_path,"r") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    max_index = max(int(row["position"]) for row in rows)
+
+    #init helper lists with zeros
+    aa_sums = [[0.0] * len(AMINO_ACID_ORDER) for _ in range(max_index)]
+    gap_sums = [0.0] * (max_index)
+    counts = [0] * (max_index)
+
+    for row in rows:
+        index = int(row["position"])-1
+
+        #parse gap probability
+        gap_prob = row["-"]
+        if(gap_prob != "-"):
+            gap_sums[index] += float(gap_prob)
+
+        #parse amino acids probabilities
+        for acid_index, acid in enumerate(AMINO_ACID_ORDER):
+            prob = row[acid]
+
+            if(prob != "-"):
+                aa_sums[index][acid_index] += float(prob)
+
+        counts[index] +=1
+
+    #init output lists with zeros
+    posterior_prob = [[0.0] for _ in range(max_index)]
+    gap_prob = [0.0] * max_index
+
+    for index in range(max_index):
+        #compute the divisor for normalization
+        total_weigth = sum(aa_sums[index])
+
+        #normalize the sums of probabilities
+        if(total_weigth>0):
+            posterior_prob[index] = [
+                value / total_weigth
+                for value in aa_sums[index]
+            ]
+        
+        #average of probabilities
+        if(counts[index] > 0):
+            gap_prob[index] = gap_sums[index] / counts[index]
+
+    return posterior_prob, gap_prob
+
+
+
+#argv[1] - path to ASR folder
+def main():
+    global population_size
+    global sequences_to_next_generation_count
+
+    #after test should be = argv[0]
+    asr_folder_base_path = "/home/david-macek/Documents/VUT_FIT/BP/materialy/ASR_data/p1j0p2/"
+
+    #population init
+    population = init_population(asr_folder_base_path)
+    
+    #top performing 10% of current generation will be promoted to next generation without a change
+    population_size = len(population)
+    sequences_to_next_generation_count = population_size // 10
+
+    #pdb_chain = parse_pdb_file(sys.argv[1])
+    pdb_chain = parse_pdb_file(asr_folder_base_path)
+    if(pdb_chain is None): return None
+
+    #compute conservation scores for every index
+    conservation_scores = compute_column_conservation(asr_folder_base_path)
+    if(conservation_scores is None): return None
+        
+    #get posterior probabilities and gap probabilities lists
+    posterior_prob, gap_prob = load_posterior_probabilities(asr_folder_base_path)
+
+    generation_index = 0
+    while generation_index != 100:
+        #run aggreprot tool on population
+        load_aggreprot_scores(population)
+
+        #evaluation of popuplation stage
+        eval_population(population)
+
+        #get top 10% performing elite
+        elite = []
+        add_best_performers_to_new_generation(population,elite)
+
+        #crossover
+        new_generation = do_crossover(pdb_chain,population,generation_index+1)
+        
+        #mutation stage - mutate only children
+        do_mutation(new_generation,conservation_scores,posterior_prob,gap_prob)
+
+        #add elite to new generation
+        new_generation += elite
+
+        #next iteration(generation)
+        population = new_generation
+        generation_index += 1
+        
+
+if __name__ == "__main__":
+    sys.exit(main())
+

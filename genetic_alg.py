@@ -1,3 +1,9 @@
+# pocatecni populace jen primi predci
+#expanze
+#pouze jednou splitting
+#esm scoring
+#celkove splitting...asi rozjet pres venv nejaky stary RASP/SCHEMA
+
 from data_structures import ProtChain
 from data_structures import PdbProtChain
 from pathlib import Path
@@ -12,6 +18,7 @@ import tempfile
 import os
 import csv
 
+split_indices = []
 population_size = 0
 sequences_to_next_generation_count = 0
 AGGREPROT_BIN = "/home/david-macek/Documents/VUT_FIT/BP/solution/.venv-aggreprot/bin/aggreprot-predictor"
@@ -135,7 +142,6 @@ def get_crossover_pairs(population: list[ProtChain])-> list[list[ProtChain]]:
 
 #function makes a new population for the next iteration of genetic algorithm
 def do_crossover(
-        pdb_chain: PdbProtChain,
         population: list[ProtChain],
         generation_number: int
         )->list[ProtChain]:
@@ -143,11 +149,6 @@ def do_crossover(
     crossover_pairs = get_crossover_pairs(population)
     children_index=0
 
-    split_indices = []
-    for pair in crossover_pairs:
-        #??same PDB file for all crossovers??
-        split_indices.append(get_split_indices(pdb_chain,pair))
-    
     new_generation = []
 
     for i in range(len(crossover_pairs)):
@@ -155,8 +156,8 @@ def do_crossover(
         parent2 = crossover_pairs[i][1]
         
         #split sequences
-        par1_splitted = get_splitted_sequences(parent1,split_indices[i])
-        par2_splitted = get_splitted_sequences(parent2,split_indices[i])
+        par1_splitted = get_splitted_sequences(parent1,split_indices)
+        par2_splitted = get_splitted_sequences(parent2,split_indices)
         
         #calculate which parts are gonna be used from par1 and which from par2
         new_aligned_seq=""
@@ -489,6 +490,7 @@ def load_posterior_probabilities(folder_base_path: str
 
 #argv[1] - path to ASR folder
 def main():
+    global split_indices
     global population_size
     global sequences_to_next_generation_count
 
@@ -497,6 +499,10 @@ def main():
 
     #population init
     population = init_population(asr_folder_base_path)
+    if(len(population)<2):
+        print("Error: population too small - less than 2 proteins\n")
+        return 1
+    
     
     #top performing 10% of current generation will be promoted to next generation without a change
     population_size = len(population)
@@ -505,6 +511,12 @@ def main():
     #pdb_chain = parse_pdb_file(sys.argv[1])
     pdb_chain = parse_pdb_file(asr_folder_base_path)
     if(pdb_chain is None): return None
+
+    #get the indices of cuts
+    split_indices = get_split_indices(
+        pdb_chain,
+        parent_chains = [population[0],population[1]]
+        )
 
     #compute conservation scores for every index
     conservation_scores = compute_column_conservation(asr_folder_base_path)
@@ -526,7 +538,7 @@ def main():
         add_best_performers_to_new_generation(population,elite)
 
         #crossover
-        new_generation = do_crossover(pdb_chain,population,generation_index+1)
+        new_generation = do_crossover(population,generation_index+1)
         
         #mutation stage - mutate only children
         do_mutation(new_generation,conservation_scores,posterior_prob,gap_prob)

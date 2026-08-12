@@ -1,6 +1,5 @@
 # pocatecni populace jen primi predci
 #expanze
-#pouze jednou splitting
 #esm scoring
 #celkove splitting...asi rozjet pres venv nejaky stary RASP/SCHEMA
 
@@ -17,6 +16,7 @@ import shutil
 import tempfile
 import os
 import csv
+import itertools
 
 split_indices = []
 population_size = 0
@@ -486,6 +486,106 @@ def load_posterior_probabilities(folder_base_path: str
 
     return posterior_prob, gap_prob
 
+#function takes each sequence divided into fragments and makes a non-fragmented seuquence 
+def assamble_sequences(combinations, list_of_parts: list[list[str]])->list[str]:
+    expanded_seqs = []
+    #assamble sequences from parts
+    for combination in combinations:
+        new_seq = ""
+
+        for fragmen_index, parent_index in enumerate(combination):
+            new_seq += list_of_parts[parent_index][fragmen_index]
+        
+        expanded_seqs.append(new_seq)
+
+    return expanded_seqs
+
+#prepare a list of splitted sequences at given indices
+def get_fragmented_population(population: list[ProtChain])-> list[list[str]]:
+    list_of_parts: list[list[str]] = []
+    
+    #make a list of fragments from each sequence in population 
+    for i in range(len(population)):
+        seq = population[i].aligned_sequence
+        boundaries = [0] + split_indices + [len(seq)]
+        #append list of fragmented sequence
+        list_of_parts.append([
+            seq[boundaries[i]:boundaries[i+1]] 
+            for i in range(len(boundaries)-1)
+            ])
+        
+    return list_of_parts
+
+
+#function randomly expands population to targeted size
+def expand_population(
+        population: list[ProtChain],
+        iteration: int,
+        target_size: int =100
+        )->list[ProtChain]:
+    
+    population_len = len(population)
+    fragment_count = len(split_indices)+1
+    sequences_to_create = target_size - population_len
+    total_combinations = population_len ** fragment_count
+
+    #prepare a list of splitted sequences at given indices
+    list_of_parts = get_fragmented_population(population)
+    
+    #take all combinations if number of combinations is lesser than targeted size
+    if(total_combinations <= target_size):
+        combinations = itertools.product(
+            range(population_len),
+            repeat=fragment_count
+        )
+
+    else:
+        #unique values only
+        combinations = set()
+
+        while(len(combinations)<target_size):
+            combination = tuple(
+                random.randrange(population_len)
+                for i in range(fragment_count)
+            )
+
+            combinations.add(combination)
+        
+        combinations = list(combinations)
+
+
+    new_combinations = []
+    #remove existing combinations in base population
+    for combination in combinations:
+        if(len(set(combination))>1):
+            new_combinations.append(combination)
+    
+    expanded_seqs: list[str] = assamble_sequences(new_combinations,list_of_parts)
+
+    #make ProtChains from sequences
+    expanded_protchains: list[ProtChain] = [
+        ProtChain(
+            id="expanded_"+ str(iteration) +"_"+str(i),
+            sequence=expanded_seqs[i].replace("-",""),
+            residues=list(expanded_seqs[i].replace("-","")),
+            aligned_sequence=expanded_seqs[i],
+            score=0.0,
+            )
+        for i in range(len(expanded_seqs))]
+
+    #append population base to expanded population
+    expanded_population = []
+    expanded_population.extend(population)
+    #append new expanded chains
+    index = 0
+    while(
+        len(expanded_population) < target_size 
+        and index < len(expanded_protchains)
+        ):
+        expanded_population.append(expanded_protchains[index])
+        index+=1
+
+    return expanded_population
 
 
 #argv[1] - path to ASR folder
@@ -527,18 +627,23 @@ def main():
 
     generation_index = 0
     while generation_index != 100:
+        #expand population
+        expanded_population = expand_population(population,generation_index)
+
         #run aggreprot tool on population
-        load_aggreprot_scores(population)
+        load_aggreprot_scores(expanded_population)
 
         #evaluation of popuplation stage
-        eval_population(population)
+        eval_population(expanded_population)
 
         #get top 10% performing elite
         elite = []
-        add_best_performers_to_new_generation(population,elite)
+        add_best_performers_to_new_generation(expanded_population,elite)
 
         #crossover
-        new_generation = do_crossover(population,generation_index+1)
+        new_generation = do_crossover(expanded_population,generation_index+1)
+
+        #generation implosion back to base size
         
         #mutation stage - mutate only children
         do_mutation(new_generation,conservation_scores,posterior_prob,gap_prob)

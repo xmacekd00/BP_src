@@ -114,8 +114,8 @@ def eval_population(population: list[ProtChain])-> int | None:
 def get_score(chain: ProtChain) -> float:
     return random.randint(0,1)/100
 
-#function returns all pairs for crossover
-#random weighted choice based on a score
+#function returns list of pairs of sequences ready for crossover
+#random weighted choice based on a fitnes score
 def get_crossover_pairs(population: list[ProtChain])-> list[list[ProtChain]]:
     
     chains = []
@@ -126,11 +126,12 @@ def get_crossover_pairs(population: list[ProtChain])-> list[list[ProtChain]]:
         chains.append(population[i])
 
     pairs = []
+    pairs_to_generate = population_size - sequences_to_next_generation_count
     #generate pairs
-    for i in range(population_size-sequences_to_next_generation_count):
+    for i in range(pairs_to_generate):
         parent1 = random.choices(chains, weights=weights, k=1)[0]
-
         parent2 = random.choices(chains, weights=weights, k=1)[0]
+
         #prevent choice of two same sequences
         while parent2 == parent1:
             parent2 = random.choices(chains, weights=weights, k=1)[0]
@@ -642,8 +643,6 @@ def main():
 
         #crossover
         new_generation = do_crossover(expanded_population,generation_index+1)
-
-        #generation implosion back to base size
         
         #mutation stage - mutate only children
         do_mutation(new_generation,conservation_scores,posterior_prob,gap_prob)

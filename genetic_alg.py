@@ -9,6 +9,7 @@ from pathlib import Path
 from schema import get_split_indices
 from pdb_structure_parser import parse_pdb_file
 from evcouplings.couplings import CouplingsModel
+from Bio import Phylo
 import sys
 import random
 import subprocess
@@ -24,8 +25,26 @@ sequences_to_next_generation_count = 0
 AGGREPROT_BIN = "/home/david-macek/Documents/VUT_FIT/BP/solution/.venv-aggreprot/bin/aggreprot-predictor"
 AMINO_ACID_ORDER = "ARNDCQEGHILKMFPSTWYV"
 
+#functions returns a list of names of all direct ancestor nodes of query
+def get_query_to_root_nodes(tree_path: str)-> list[str] | None:
+    tree = Phylo.read(tree_path,"newick")
+    query = tree.find_any(name="query")
+
+    if(query is None):
+        print(f"Error: no leaf node named query in {tree_path}\n")
+        return None
+    
+    path = tree.get_path(query)
+
+    #add root and remove qeury node
+    ancestor_nodes = [tree.root] + path[:-1]
+
+    return [node.confidence for node in ancestor_nodes]
+
+
 # function returns list of protein chains parsed out of .dat files
 def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]:
+
 
     folder_path = asr_folder_base_path + "asr/lazarus_tree_nodes/tree1"
     #get all item from given directory

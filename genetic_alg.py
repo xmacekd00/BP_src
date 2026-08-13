@@ -26,7 +26,7 @@ AGGREPROT_BIN = "/home/david-macek/Documents/VUT_FIT/BP/solution/.venv-aggreprot
 AMINO_ACID_ORDER = "ARNDCQEGHILKMFPSTWYV"
 
 #functions returns a list of names of all direct ancestor nodes of query
-def get_query_to_root_nodes(tree_path: str)-> list[str] | None:
+def get_query_ancestors(tree_path: str)-> list[str] | None:
     tree = Phylo.read(tree_path,"newick")
     query = tree.find_any(name="query")
 

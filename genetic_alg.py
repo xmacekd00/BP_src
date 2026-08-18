@@ -1,6 +1,3 @@
-# pocatecni populace jen primi predci
-#expanze
-#esm scoring
 #celkove splitting...asi rozjet pres venv nejaky stary RASP/SCHEMA
 
 from data_structures import ProtChain
@@ -9,7 +6,6 @@ from pathlib import Path
 from schema import get_split_indices
 from schema import get_chains_from_fasta_file
 from pdb_structure_parser import parse_pdb_file
-from evcouplings.couplings import CouplingsModel
 from Bio import Phylo
 import sys
 import random
@@ -25,6 +21,11 @@ population_size = 0
 sequences_to_next_generation_count = 0
 AGGREPROT_BIN = "/home/david-macek/Documents/VUT_FIT/BP/solution/.venv-aggreprot/bin/aggreprot-predictor"
 AMINO_ACID_ORDER = "ARNDCQEGHILKMFPSTWYV"
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+ESM_PYTHON = BASE_DIR / ".venv-esm/bin/python"
+ESM_SCRIPT = Path(__file__).resolve().parent / "esm_score.py"
 
 #functions returns a list of names of all direct ancestor nodes of query
 def get_query_ancestors(tree_path: str)-> list[str] | None:
@@ -97,38 +98,28 @@ def extract_sequence_from_dat_file(path: Path) -> str:
 #function computes fitness score of each individual in population and sets its .score
 def eval_population(population: list[ProtChain])-> int | None:
     
-    model = CouplingsModel("model.params")
-    unscored_indices = [
-        i
-        for i in range(len(population))
-        if  population[i].score == 0.0
-    ]
-    unscored_seqs = []
+    for chain in population:
+        #already scored
+        if(chain.score != 0.0): continue
 
-    for index in unscored_indices:
-        seq = population[index].aligned_sequence
-        
-        if(len(seq) != model.L):
-            print("Error: protein sequence has unsupported length\n")
-            return None
-        
-        unscored_seqs.append(seq)
-
-    #no new sequences in population
-    if not unscored_seqs: return 0
-
-
-    scores = model.hamiltonians(unscored_seqs)
-
-    for index, score in zip(unscored_indices,scores):
-        population[index].score = float(score[0])
-
+        score = get_esm_score(chain.sequence)
+        chain.score = score
     return 0
         
-#TODO
-#random generator
-def get_score(chain: ProtChain) -> float:
-    return random.randint(0,1)/100
+#function runns esm scoring script and returns score for given sequence
+def get_esm_score(seq: str) -> float:
+    result = subprocess.run(
+        [
+            str(ESM_PYTHON),
+            str(ESM_SCRIPT),
+            seq
+        ],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+
+    return float(result.stdout.strip())
 
 #function returns list of pairs of sequences ready for crossover
 #random weighted choice based on a fitnes score

@@ -1,5 +1,6 @@
 import torch
 import esm
+import sys
 
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
 batch_converter = alphabet.get_batch_converter()
@@ -27,4 +28,9 @@ def evaluate_individual(sequence):
     fitness = predicted_tm + (10.0 * plausibility)
     
     return fitness
+
+if __name__ == "__main__":
+    sequence = sys.argv[1]
+    score = evaluate_individual(sequence)
+    print(score)
 

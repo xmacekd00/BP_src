@@ -27,6 +27,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ESM_PYTHON = BASE_DIR / ".venv-esm/bin/python"
 ESM_SCRIPT = Path(__file__).resolve().parent / "esm_score.py"
 
+SCHEMA_PYTHON = BASE_DIR / ".venv-schema/bin/python"
+SCHEMA_SCRIPT = Path(__file__).resolve().parent / "schema_raspp.py"
+
 #functions returns a list of names of all direct ancestor nodes of query
 def get_query_ancestors(tree_path: str)-> list[str] | None:
     tree = Phylo.read(tree_path,"newick")
@@ -42,6 +45,28 @@ def get_query_ancestors(tree_path: str)-> list[str] | None:
     ancestor_nodes = [tree.root] + path[:-1]
 
     return [str(int(node.confidence)) for node in ancestor_nodes]
+
+#function reads given full_msa input file and returns query ProtChain representation
+def get_query_representation(base_path: str)-> ProtChain:
+    full_msa_data = load_sequences_from_full_msa_file(base_path)
+
+    #get query msa
+    query_msa = ""
+    for i in range(len(full_msa_data)):
+        if(full_msa_data[i]=="query"):
+            query_msa=full_msa_data[i+1]
+
+    query_seq = query_msa.replace("-","")
+
+    query: ProtChain = ProtChain(
+        id="query",
+        sequence=query_seq,
+        residues=list(query_seq),
+        aligned_sequence=query_msa,
+        score=0.0
+        )
+    
+    return query
 
 # function returns list of protein chains parsed out of .dat files
 def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]:
@@ -318,10 +343,8 @@ def process_aggreprot_output(lines: list[str],population: list[ProtChain]):
         if(line_id in chain_id_map):
             chain_id_map[line_id].aggreprot_scores = scores
 
-#function computes conservation rate of each column from full_msa
-def compute_column_conservation(folder_base_path: str)-> list[float] | None:
-    path = folder_base_path + "asr/full_msa.fasta"
-    
+def load_sequences_from_full_msa_file(base_path: str)->list[str]:
+    path = base_path + "asr/full_msa.fasta"
     #read full_msa.fasta
     with open(path,"r") as f:
         lines  = f.readlines()
@@ -330,15 +353,29 @@ def compute_column_conservation(folder_base_path: str)-> list[float] | None:
     sequences = []
     current_seq = ""
 
+    #append first sequences id
+    sequences.append(lines[0][1:].strip())
+
     for i in range(1,len(lines)):
         #new sequence begins, so append the previous one
         if(lines[i].startswith(">")):
             sequences.append(current_seq.strip())
             current_seq = ""
+            #append next sequence id
+            sequences.append(lines[i][1:].strip())
         else:
             current_seq += lines[i].strip()
     #append last sequnce
     sequences.append(current_seq)
+
+    return sequences
+
+#function computes conservation rate of each column from full_msa
+def compute_column_conservation(folder_base_path: str)-> list[float] | None:
+    full_msa_data = load_sequences_from_full_msa_file(folder_base_path)
+
+    sequences = [full_msa_data[i] for i in range(len(full_msa_data)) if i%2==1]
+    
 
     if(len(sequences)==0):
         print("Error: full_msa.fasta is empty or bug in compute_column_conservation\n")
@@ -595,6 +632,49 @@ def expand_population(
 
     return expanded_population
 
+#function makes temporary fasta file with all population chains,runs raspp/schema and returns split indices
+def get_schema_split_inidices(population: list[ProtChain],
+                              pdb_path: str,
+                              num_of_cuts: int
+                              )->list[int] | None:
+        #make tmp fasta file for schema        
+        with tempfile.TemporaryDirectory(dir=".") as tmp_dir:
+            fasta_path = Path(tmp_dir) / "schema_parents.fasta"
+
+        #write all chains
+        with open(fasta_path, "w") as f:
+            for chain in population:
+                f.write(f">{chain.id}\n")
+                f.write(f"{chain.aligned_sequence}\n")
+        #run raspp/schema
+        result = subprocess.run(
+            [
+                str(SCHEMA_PYTHON),
+                str(SCHEMA_SCRIPT),
+                str(fasta_path),
+                pdb_path,
+                str(num_of_cuts)
+            ],
+            capture_output=True,
+            text=True
+        )
+
+        if(result.returncode != 0):
+            print(f"Error: raspp/schema - {result.stderr}\n")
+            return None
+
+        output = result.stdout.strip()
+
+        if(not output):
+            print("Error: schema did not work")
+            return None
+
+        split_indices = [
+            int(value)
+            for value in output.split(",")
+        ]
+
+        return split_indices
 
 #argv[1] - path to ASR folder
 def main():

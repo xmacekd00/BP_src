@@ -695,6 +695,7 @@ def main():
     #top performing 10% of current generation will be promoted to next generation without a change
     population_size = len(population)
     sequences_to_next_generation_count = population_size // 10
+    if(sequences_to_next_generation_count == 0): sequences_to_next_generation_count =1
 
     #pdb_chain = parse_pdb_file(sys.argv[1])
     pdb_chain = parse_pdb_file(asr_folder_base_path)

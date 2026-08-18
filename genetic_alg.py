@@ -7,6 +7,7 @@ from data_structures import ProtChain
 from data_structures import PdbProtChain
 from pathlib import Path
 from schema import get_split_indices
+from schema import get_chains_from_fasta_file
 from pdb_structure_parser import parse_pdb_file
 from evcouplings.couplings import CouplingsModel
 from Bio import Phylo
@@ -39,32 +40,28 @@ def get_query_ancestors(tree_path: str)-> list[str] | None:
     #add root and remove qeury node
     ancestor_nodes = [tree.root] + path[:-1]
 
-    return [node.confidence for node in ancestor_nodes]
-
+    return [str(int(node.confidence)) for node in ancestor_nodes]
 
 # function returns list of protein chains parsed out of .dat files
 def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]:
+    #get numbers of ancestor nodes
+    ancestor_nodes = get_query_ancestors(asr_folder_base_path + "asr/ancestral_tree.tre")
+    if ancestor_nodes is None: return None
 
+    #get query representation
+    query: ProtChain = get_chains_from_fasta_file(asr_folder_base_path + "query.fasta")[0]
 
-    folder_path = asr_folder_base_path + "asr/lazarus_tree_nodes/tree1"
-    #get all item from given directory
-    folder_content = list(Path(folder_path).iterdir())
+    dat_folder_path = asr_folder_base_path + "asr/lazarus_tree_nodes/tree1/"
 
-    node_files = []
-    index= 0
-
-    #append to node_files all files starting with "node"
-    for item in folder_content:
-        if(not item.is_file()): continue
-
-        if(not item.name.startswith("node")): continue
-
-        node_files.append(item)
+    #make list of .dat file names from node numbers
+    ancestor_dat_files_names = [dat_folder_path + "node" + number + ".dat" for number in ancestor_nodes]
 
     chains = []
+    chains.append(query)
+    index = 0
 
     #extract from all .dat files protein sequences and append them to list
-    for file in node_files:
+    for file in ancestor_dat_files_names:
         aligned_sequence = extract_sequence_from_dat_file(file)
         sequence = aligned_sequence.replace("-","")
 

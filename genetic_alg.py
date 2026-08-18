@@ -641,23 +641,23 @@ def get_schema_split_inidices(population: list[ProtChain],
         with tempfile.TemporaryDirectory(dir=".") as tmp_dir:
             fasta_path = Path(tmp_dir) / "schema_parents.fasta"
 
-        #write all chains
-        with open(fasta_path, "w") as f:
-            for chain in population:
-                f.write(f">{chain.id}\n")
-                f.write(f"{chain.aligned_sequence}\n")
-        #run raspp/schema
-        result = subprocess.run(
-            [
-                str(SCHEMA_PYTHON),
-                str(SCHEMA_SCRIPT),
-                str(fasta_path),
-                pdb_path,
-                str(num_of_cuts)
-            ],
-            capture_output=True,
-            text=True
-        )
+            #write all chains
+            with open(fasta_path, "w") as f:
+                for chain in population:
+                    f.write(f">{chain.id}\n")
+                    f.write(f"{chain.aligned_sequence}\n")
+            #run raspp/schema
+            result = subprocess.run(
+                [
+                    str(SCHEMA_PYTHON),
+                    str(SCHEMA_SCRIPT),
+                    str(fasta_path),
+                    pdb_path,
+                    str(num_of_cuts)
+                ],
+                capture_output=True,
+                text=True
+            )
 
         if(result.returncode != 0):
             print(f"Error: raspp/schema - {result.stderr}\n")
@@ -702,10 +702,8 @@ def main():
     if(pdb_chain is None): return None
 
     #get the indices of cuts
-    split_indices = get_split_indices(
-        pdb_chain,
-        parent_chains = [population[0],population[1]]
-        )
+    split_indices = get_schema_split_inidices(population,asr_folder_base_path + "asr/structure.pdb",1)
+
 
     #compute conservation scores for every index
     conservation_scores = compute_column_conservation(asr_folder_base_path)

@@ -75,7 +75,7 @@ def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]
     if ancestor_nodes is None: return None
 
     #get query representation
-    query: ProtChain = get_chains_from_fasta_file(asr_folder_base_path + "query.fasta")[0]
+    query: ProtChain = get_query_representation(asr_folder_base_path)
 
     dat_folder_path = asr_folder_base_path + "asr/lazarus_tree_nodes/tree1/"
 

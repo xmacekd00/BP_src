@@ -1,43 +1,30 @@
-import sys
 import torch
 import esm
 
+model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+batch_converter = alphabet.get_batch_converter()
+model.eval()
 
-def score_sequence(sequence: str) -> float:
-    model, alphabet = esm.pretrained.esm2_t6_8M_UR50D()
-    model.eval()
-
-    batch_converter = alphabet.get_batch_converter()
-
-    _, _, tokens = batch_converter([
-        ("protein", sequence)
-    ])
-
-    position_scores = []
-
+def get_plausibility_score(sequence):
+    data = [("protein", sequence)]
+    _, _, tokens = batch_converter(data)
+    
     with torch.no_grad():
-        for sequence_index in range(len(sequence)):
-            token_index = sequence_index + 1  # první token je BOS
+        results = model(tokens)
+        logits = results["logits"]
+    
+    toks = tokens[0, 1:-1]
+    log_probs = torch.log_softmax(logits[0, 1:-1], dim=-1)
+    target_log_probs = log_probs[torch.arange(len(toks)), toks]
+    
+    return torch.mean(target_log_probs).item()
 
-            masked_tokens = tokens.clone()
-            original_token = tokens[0, token_index].item()
+def evaluate_individual(sequence):
+    predicted_tm = 1
+    
+    plausibility = get_plausibility_score(sequence)
+    
+    fitness = predicted_tm + (10.0 * plausibility)
+    
+    return fitness
 
-            masked_tokens[0, token_index] = alphabet.mask_idx
-
-            output = model(masked_tokens)
-            logits = output["logits"][0, token_index]
-
-            log_probabilities = torch.log_softmax(logits, dim=-1)
-
-            position_scores.append(
-                log_probabilities[original_token].item()
-            )
-
-    return sum(position_scores) / len(position_scores)
-
-
-if __name__ == "__main__":
-    sequence = sys.argv[1].strip().upper()
-    score = score_sequence(sequence)
-
-    print(score)

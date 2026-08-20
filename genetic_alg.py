@@ -122,29 +122,51 @@ def extract_sequence_from_dat_file(path: Path) -> str:
     
 #function computes fitness score of each individual in population and sets its .score
 def eval_population(population: list[ProtChain])-> int | None:
-    
-    for chain in population:
-        #already scored
-        if(chain.score != 0.0): continue
+    chains_to_score = []
+    seqs_to_score = []
 
-        score = get_esm_score(chain.sequence)
+    #filter not scored sequences
+    for chain in population:
+        if(chain.score==0.0):
+            chains_to_score.append(chain)
+            seqs_to_score.append(chain.sequence)
+
+    if(not chains_to_score): return 0
+
+    scores = get_esm_scores(seqs_to_score)
+    
+    for chain, score in zip(chains_to_score,scores):
         chain.score = score
+    
     return 0
         
 #function runns esm scoring script and returns score for given sequence
-def get_esm_score(seq: str) -> float:
-    result = subprocess.run(
-        [
-            str(ESM_PYTHON),
-            str(ESM_SCRIPT),
-            seq
-        ],
-        capture_output=True,
-        text=True,
-        check=True
-    )
+def get_esm_scores(sequences: list[str]) -> list[float]:
+    #write all sequences into txt file for exportation
+    with tempfile.NamedTemporaryFile(mode="w",delete=False,suffix=".txt") as f:
+        for seq in sequences: f.write(seq + "\n")
 
-    return float(result.stdout.strip())
+        tmp_path = f.name
+
+    try:
+        #call esml script
+        result = subprocess.run(
+        [str(ESM_PYTHON), str(ESM_SCRIPT), tmp_path],
+        capture_output=True, text=True, check=True
+        )
+
+
+        scores = []
+        #parse scores from stdout
+        for line in result.stdout.splitlines():
+            if(line.startswith("score:")):
+                score = line.split(":",1)[1]
+                scores.append(float(score))
+
+        return scores
+
+    finally:
+        os.remove(tmp_path)
 
 #function returns list of pairs of sequences ready for crossover
 #random weighted choice based on a fitnes score
@@ -383,6 +405,8 @@ def compute_column_conservation(folder_base_path: str)-> list[float] | None:
     
     col_conservation_score = []
 
+    #potential space for improvement:
+    #if 255 sequences have gap and one has "M", then conservation is 100%
     for i in range(len(sequences[0])):
         residue_count_dict = {}
 

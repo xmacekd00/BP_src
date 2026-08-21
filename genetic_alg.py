@@ -3,8 +3,6 @@
 from data_structures import ProtChain
 from data_structures import PdbProtChain
 from pathlib import Path
-from schema import get_split_indices
-from schema import get_chains_from_fasta_file
 from pdb_structure_parser import parse_pdb_file
 from Bio import Phylo
 import sys
@@ -59,7 +57,7 @@ def get_query_representation(base_path: str)-> ProtChain:
     query_seq = query_msa.replace("-","")
 
     query: ProtChain = ProtChain(
-        id="query",
+        id="Q",
         sequence=query_seq,
         residues=list(query_seq),
         aligned_sequence=query_msa,
@@ -92,7 +90,7 @@ def init_population(asr_folder_base_path: str) -> list[ProtChain | PdbProtChain]
         sequence = aligned_sequence.replace("-","")
 
         chain = ProtChain(
-            id="node"+str(index),
+            id=f"N{ancestor_nodes[index]}",
             sequence=sequence,
             residues=list(sequence),
             aligned_sequence=aligned_sequence)
@@ -172,28 +170,48 @@ def get_esm_scores(sequences: list[str]) -> list[float]:
 #random weighted choice based on a fitnes score
 def get_crossover_pairs(population: list[ProtChain])-> list[list[ProtChain]]:
     
-    chains = []
     weights = []
+    min_score = min(chain.score for chain in population)
+
     #put weigths and sequences into separate lists
     for i in range(len(population)):
-        weights.append(population[i].score)
-        chains.append(population[i])
+        weights.append(population[i].score - min_score + 1e-6)
 
     pairs = []
     pairs_to_generate = population_size - sequences_to_next_generation_count
     #generate pairs
     for i in range(pairs_to_generate):
-        parent1 = random.choices(chains, weights=weights, k=1)[0]
-        parent2 = random.choices(chains, weights=weights, k=1)[0]
+        parent1 = random.choices(population, weights=weights, k=1)[0]
+        parent2 = random.choices(population, weights=weights, k=1)[0]
 
         #prevent choice of two same sequences
         while parent2 == parent1:
-            parent2 = random.choices(chains, weights=weights, k=1)[0]
+            parent2 = random.choices(population, weights=weights, k=1)[0]
 
         pairs.append([parent1, parent2])
 
 
     return pairs
+
+#function returns only C/E_number in generation
+def get_short_id(chain_id: str) -> str:
+    return chain_id.split("[",1)[0]
+
+#function assambles id for ProtChain
+def assamble_id_str(
+        mode: str,
+        parents: list[ProtChain],
+        generation_number: int,
+        child_index: int,
+        fragment_sources: list[str])->str:
+
+    parent_short_ids = [get_short_id(par.id) for par in parents]
+
+    
+
+    id = f"{mode}{generation_number}_{child_index}[{'+'.join(parent_short_ids)},{''.join(fragment_sources)}]"
+
+    return id
 
 #function makes a new population for the next iteration of genetic algorithm
 def do_crossover(
@@ -206,16 +224,19 @@ def do_crossover(
 
     new_generation = []
 
+
     for i in range(len(crossover_pairs)):
         parent1 = crossover_pairs[i][0]
         parent2 = crossover_pairs[i][1]
         
         #split sequences
-        par1_splitted = get_splitted_sequences(parent1,split_indices)
-        par2_splitted = get_splitted_sequences(parent2,split_indices)
+        par1_splitted = get_splitted_sequences(parent1)
+        par2_splitted = get_splitted_sequences(parent2)
         
         #calculate which parts are gonna be used from par1 and which from par2
         new_aligned_seq=""
+        fragment_sources = []
+
         #iterate through parts and build the sequence of par1 and par2
         for j in range(len(par1_splitted)):
             par1_score = sum(par1_splitted[j].aggreprot_scores)
@@ -228,13 +249,20 @@ def do_crossover(
                 [par1_splitted[j],par2_splitted[j]],
                 weights=[weight1,weight2],
                 k=1)[0]
+
+            if(choice == par1_splitted[j]):
+                fragment_sources.append("0")
+            else:
+                fragment_sources.append("1")
             
             new_aligned_seq+=choice.aligned_sequence
 
         new_seq = new_aligned_seq.replace("-","")
 
+        prot_id = assamble_id_str("C",[parent1,parent2],generation_number,children_index,fragment_sources)
+
         new_chain = ProtChain(
-            id=f"gen{generation_number}_child{children_index}",
+            id=prot_id,
             sequence=new_seq,
             residues=list(new_seq),
             aligned_sequence=new_aligned_seq
@@ -246,7 +274,7 @@ def do_crossover(
 
 #function splits sequence by given indices and returns list of ProtChain structures
 #One ProtChain strcture is one part of parent sequence
-def get_splitted_sequences(chain: ProtChain, split_indices: list[int])-> list[ProtChain]:
+def get_splitted_sequences(chain: ProtChain)-> list[ProtChain]:
     parts: list[ProtChain] = []
     indices = [0] + split_indices + [len(chain.aligned_sequence)]
 
@@ -589,13 +617,13 @@ def get_fragmented_population(population: list[ProtChain])-> list[list[str]]:
 #function randomly expands population to targeted size
 def expand_population(
         population: list[ProtChain],
-        iteration: int,
+        generation_number: int,
         target_size: int =100
         )->list[ProtChain]:
     
     population_len = len(population)
     fragment_count = len(split_indices)+1
-    sequences_to_create = target_size - population_len
+    
     total_combinations = population_len ** fragment_count
 
     #prepare a list of splitted sequences at given indices
@@ -628,24 +656,40 @@ def expand_population(
     for combination in combinations:
         if(len(set(combination))>1):
             new_combinations.append(combination)
-    
+
+    #list of new sequences
     expanded_seqs: list[str] = assamble_sequences(new_combinations,list_of_parts)
 
-    #make ProtChains from sequences
-    expanded_protchains: list[ProtChain] = [
-        ProtChain(
-            id="expanded_"+ str(iteration) +"_"+str(i),
-            sequence=expanded_seqs[i].replace("-",""),
-            residues=list(expanded_seqs[i].replace("-","")),
-            aligned_sequence=expanded_seqs[i],
-            score=0.0,
-            )
-        for i in range(len(expanded_seqs))]
+    expanded_protchains: list[ProtChain] = []
 
-    #append population base to expanded population
+    for i, combination in  enumerate(new_combinations):
+        parent_indices = list(dict.fromkeys(combination))
+
+        parensts = [population[parent_index] for parent_index in parent_indices]
+
+        seq = expanded_seqs[i]
+
+        #transform parent indices to format required by assamble_id_str
+        fragment_sources = [str(parent_indices.index(parent_index)) for parent_index in combination]
+
+        prot_id = assamble_id_str("E",parensts,generation_number,i,fragment_sources)
+
+        expanded_protchains.append(
+            ProtChain(
+                id=prot_id,
+                sequence=seq.replace("-", ""),
+                residues=list(seq.replace("-", "")),
+                aligned_sequence=seq,
+                score=0.0
+            )
+        )
+
     expanded_population = []
+    #append population base to expanded population
     expanded_population.extend(population)
-    #append new expanded chains
+
+
+    #append new expanded chains until the size of population hits the targeted size
     index = 0
     while(
         len(expanded_population) < target_size 
@@ -737,7 +781,8 @@ def main():
     posterior_prob, gap_prob = load_posterior_probabilities(asr_folder_base_path)
 
     generation_index = 0
-    while generation_index != 100:
+    while generation_index != 10:
+        print(f"processing generation: {generation_index}\n")
         #expand population
         expanded_population = expand_population(population,generation_index)
 
@@ -746,6 +791,9 @@ def main():
 
         #evaluation of popuplation stage
         eval_population(expanded_population)
+
+        for chain in population:
+            print(f"{chain.id}: {chain.score}, {chain.aligned_sequence}\n")
 
         #get top 10% performing elite
         elite = []
@@ -763,6 +811,13 @@ def main():
         #next iteration(generation)
         population = new_generation
         generation_index += 1
+
+
+    print(f"processing generation: {generation_index}\n")
+    eval_population(population)
+
+    for chain in population:
+        print(f"{chain.id}: {chain.score}, {chain.aligned_sequence}\n")
         
 
 if __name__ == "__main__":
